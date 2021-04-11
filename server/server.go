@@ -35,9 +35,9 @@ type User struct {
 type SendMode int
 
 const (
-	DuplexMode SendMode = iota
-	ToFriend
-	ForMyself
+	Me SendMode = iota
+	Them
+	Duplex
 )
 
 func (h *Server) HandleConnection(conn net.Conn) error {
@@ -46,56 +46,37 @@ func (h *Server) HandleConnection(conn net.Conn) error {
 		return err
 	}
 
-	sendStatus := func(user User, mode SendMode) {
+	// Put new connection to the store.
+	go func() {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 
-		for _, friendID := range user.Friends {
-			friend, online := h.store[friendID]
-			if !online {
-				continue
-			}
+		oldConn, ok := h.store[user.UserID]
 
-			switch mode {
-			case DuplexMode:
-				json.NewEncoder(friend.conn).Encode(user)
-				json.NewEncoder(conn).Encode(friend)
-			case ForMyself:
-				json.NewEncoder(conn).Encode(friend)
-			case ToFriend:
-				json.NewEncoder(friend.conn).Encode(user)
-			}
+		mode := Duplex
+		// If user's connection exists then broke the old connection.
+		if ok {
+			oldConn.conn.SetDeadline(time.Now())
+			mode = Me
+		} else {
+			log.Printf("User #%d connected", user.UserID)
 		}
-	}
 
-	// Check connection and put the new connection to the store.
-	h.mu.Lock()
-	oldConn, ok := h.store[user.UserID]
-
-	mode := DuplexMode
-	// If user's connection exists then broke the old connection.
-	if ok {
-		oldConn.conn.SetDeadline(time.Now())
-		mode = ForMyself
-	} else {
-		log.Printf("User #%d connected", user.UserID)
 		user.IsOnline = true
-	}
+		go h.sendStatus(conn, user, mode)
 
-	go sendStatus(user, mode)
+		h.store[user.UserID] = &Conn{
+			conn: conn,
+			User: user,
+		}
+	}()
 
-	h.store[user.UserID] = &Conn{
-		conn: conn,
-		User: user,
-	}
-	h.mu.Unlock()
-
-	//Run goroutine with block of reading from the connection
+	// Run goroutine with <-: connection.
 	//
-	//When reading will be failed:
+	// When reading will be failed:
 	//
-	//os.ErrDeadlineExceeded  - nothing;
-	//other reasons           - send message about it user's friends.
+	// os.ErrDeadlineExceeded  - nothing;
+	// other reasons           - send message about it user's friends.
 	go func() {
 		defer conn.Close()
 
@@ -108,7 +89,7 @@ func (h *Server) HandleConnection(conn net.Conn) error {
 				}
 
 				user.IsOnline = false
-				sendStatus(user, ToFriend)
+				h.sendStatus(conn, user, Them)
 
 				h.mu.Lock()
 				delete(h.store, user.UserID)
@@ -121,4 +102,26 @@ func (h *Server) HandleConnection(conn net.Conn) error {
 	}()
 
 	return nil
+}
+
+func (h *Server) sendStatus(conn net.Conn, user User, mode SendMode) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	for _, friendID := range user.Friends {
+		friend, online := h.store[friendID]
+		if !online {
+			continue
+		}
+
+		switch mode {
+		case Me:
+			json.NewEncoder(conn).Encode(friend)
+		case Them:
+			json.NewEncoder(friend.conn).Encode(user)
+		case Duplex:
+			json.NewEncoder(friend.conn).Encode(user)
+			json.NewEncoder(conn).Encode(friend)
+		}
+	}
 }

@@ -3,12 +3,11 @@ package main
 import (
 	"encoding/json"
 	"flag"
-	"github.com/nicholas-sokolov/omega/server"
-	_ "github.com/valyala/fasthttp"
 	"io/ioutil"
 	"log"
 	"net"
-	_ "net"
+
+	"github.com/nicholas-sokolov/omega/server"
 )
 
 func main() {
